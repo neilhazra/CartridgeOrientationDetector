@@ -1,32 +1,47 @@
 import math
+import sys
 import cv2
 import numpy as np
 
-
+'''
+These are the HSV thresholds for the green cartridges and the white cartridges
+'''
 green = {'low_h': 45, 'high_h': 80, 'low_s': 0, 'high_s': 255, 'low_v': 0, 'high_v': 255}
 white = {'low_h': 0, 'high_h': 180, 'low_s': 0, 'high_s': 52, 'low_v': 115, 'high_v': 255}
 
+'''
+We can use some coarse heuristics to filter out noise and only find the contours that correspond to the cartridges
+These will need to be tuned when we implement it on a raspberry pi/ with rpi camera
+'''
 min_cartridge_area = 1500
 min_cartridge_eccentricity = 0.93
 max_cartridge_eccentricity = 0.98
 
 
+# Pass in the RGB image to this function
+# Pass in the the color of cartridge to look for (green or white)
 def get_contours_img(img, color):
+    # convert the image to greyscale
     img_HSV = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # use a thresholding function to find all pixels within the appropriate color range
     frame_threshold = cv2.inRange(img_HSV, (color['low_h'], color['low_s'], color['low_v']),
                                   (color['high_h'], color['high_s'], color['high_v']))
+    # use the opencv contours function to find contours of the image, pass RETR_EXTERNAL flag so we only consider
+    # external contours and not the ones found inside the cartridge
     cartridge_contours, _ = cv2.findContours(frame_threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cartridge_contours = [contour for contour in cartridge_contours if
-                          cv2.contourArea(contour) > cv2.arcLength(contour, closed=True)]
     filtered_contours = []
-
+    # filter the contours based on some heuristics of how the cartridge looks like
+    # (size eccentricity etc)
+    # I use image moments to determine the area and eccentricity of the contour
+    # https://en.wikipedia.org/wiki/Image_moment
     for contour in cartridge_contours:
         moments = cv2.moments(contour)
+        area = moments['m00']
+        if area < min_cartridge_area: continue
         cov_matrix = np.array([[moments['nu20'], moments['nu11']], [moments['nu11'], moments['nu02']]])
         eig_vals = np.sort(np.linalg.eigvals(cov_matrix))
         eccentricity = math.sqrt(1 - eig_vals[0] / eig_vals[1])
-        area = moments['m00']
-        if area > min_cartridge_area and max_cartridge_eccentricity > eccentricity > min_cartridge_eccentricity:
+        if max_cartridge_eccentricity > eccentricity > min_cartridge_eccentricity:
             filtered_contours.append(contour)
     return filtered_contours
 
@@ -35,6 +50,7 @@ def find_angle_of_rotation(contours, image_annotations=None):
     angles = []
     centers = []
     for contour in contours:
+        # use image moments to get relevant features of the image
         moments = cv2.moments(contour)
         center_of_mass = (int(moments['m10'] / moments['m00']), int(moments['m01'] / moments['m00']))
         angle = 90 - math.degrees(0.5 * math.atan2(2 * moments['nu11'], moments['nu20'] - moments['nu02']))
@@ -68,11 +84,10 @@ def orientation_detection(img, color, annotated_image=None):
     return annotated_image, angles, centers
 
 
-test_images = ['img.png', 'img_1.png', 'img_2.png', 'img_3.png', 'img_4.png', 'img_5.png', 'img_6.png']
-for image_uri in test_images:
-    img = cv2.imread("test_images" + '/' + image_uri)
+if __name__ == "__main__":
+    image = sys.argv[1]
+    img = cv2.imread(image)
     annotated_image, _, _ = orientation_detection(img, green, img.copy())
     annotated_image, _, _ = orientation_detection(img, white, annotated_image)
-    cv2.imwrite("annotated_images/" + image_uri, annotated_image)
     cv2.imshow("orientation detection", annotated_image)
     cv2.waitKey(0)
