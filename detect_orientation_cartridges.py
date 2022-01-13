@@ -83,6 +83,44 @@ def orientation_detection(img, color, annotated_image=None):
     annotated_image, angles, centers = find_angle_of_rotation(contours, annotated_image)
     return annotated_image, angles, centers
 
+#UNUSED
+def get_internal_features(cartridges):
+    # TODO This function is incomplete, it will be used to get internal features of the cartridge that can be used to
+    # tell if its facing up or facing down
+    all_descriptors = []
+    for cartridge in cartridges:
+        height, width, _ = cartridge.shape
+        greyscale_image = cv2.cvtColor(cartridge, cv2.COLOR_BGR2HSV)[:, :, 2]
+        edges = cv2.Canny(greyscale_image, 150, 150)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        morphed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(morphed_edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        # get rid of noisy points/contours
+        valid_contours = [i for i, cont in enumerate(contours) if cv2.contourArea(cont) > cv2.arcLength(cont, True)]
+        # generate descriptors for each contour using the contour moments
+        contour_descriptors = []
+        for i in valid_contours:
+            moments = cv2.moments(contours[i])
+            area = moments['m00']
+            x = moments['m10'] / moments['m00']
+            y = moments['m01'] / moments['m00']
+            cov_matrix = np.array([[moments['nu20'], moments['nu11']], [moments['nu11'], moments['nu02']]])
+            eig_vals = np.sort(np.linalg.eigvals(cov_matrix))
+            eccentricity = math.sqrt(1 - eig_vals[0] / eig_vals[1])
+            contour_descriptors.append([i, area, x, y, eccentricity])
+
+        if len(contour_descriptors) == 0:
+            all_descriptors.append(contour_descriptors)
+            continue
+        # relative position to center of the sample, select the contour with the largest area
+        contour_descriptors.sort(key=lambda descriptor: descriptor[1], reverse=True)
+        cartridge_area = contour_descriptors[0][1]
+        contour_x, contour_y = contour_descriptors[0][2], contour_descriptors[0][3]
+        contour_descriptors = [[d[0], d[1]/cartridge_area, (d[2] - contour_x)/width, (d[3] - contour_y)/height, d[4]]
+                               for d in contour_descriptors]
+        all_descriptors.append(contour_descriptors)
+    return all_descriptors
+
 
 if __name__ == "__main__":
     image = sys.argv[1]
