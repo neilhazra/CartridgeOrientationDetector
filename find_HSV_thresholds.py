@@ -1,14 +1,11 @@
 # helper script to find HSV thresholds
-
 import cv2
-
-image = cv2.imread('test_images/img_1.png')
 max_value = 255
 max_value_H = 360 // 2
-low_H = 37
-low_S = 0
+low_H = 45
+low_S = 150
 low_V = 0
-high_H = 87
+high_H = 110
 high_S = max_value
 high_V = max_value
 low_H_name = 'Low H'
@@ -86,6 +83,9 @@ cv2.createTrackbar(high_S_name, window_detection_name, high_S, max_value, on_hig
 cv2.createTrackbar(low_V_name, window_detection_name, low_V, max_value, on_low_V_thresh_trackbar)
 cv2.createTrackbar(high_V_name, window_detection_name, high_V, max_value, on_high_V_thresh_trackbar)
 
-while True:
-    threshold_img(image)
+cap = cv2.VideoCapture(0)
+ret = True
+while ret:
+    ret, frame = cap.read()
+    threshold_img(frame)
     print(low_H, high_H, low_S, high_S, low_V, high_V)

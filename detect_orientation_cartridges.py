@@ -1,12 +1,15 @@
+import itertools
 import math
-import sys
+import os
 import cv2
 import numpy as np
+from sklearn.mixture import GaussianMixture
+from scipy.ndimage import rotate
 
 '''
 These are the HSV thresholds for the green cartridges and the white cartridges
 '''
-green = {'low_h': 45, 'high_h': 80, 'low_s': 0, 'high_s': 255, 'low_v': 0, 'high_v': 255}
+green = {'low_h': 45, 'high_h': 110, 'low_s': 120, 'high_s': 255, 'low_v': 0, 'high_v': 255}
 white = {'low_h': 0, 'high_h': 180, 'low_s': 0, 'high_s': 52, 'low_v': 115, 'high_v': 255}
 
 '''
@@ -16,6 +19,9 @@ These will need to be tuned when we implement it on a raspberry pi/ with rpi cam
 min_cartridge_area = 1500
 min_cartridge_eccentricity = 0.93
 max_cartridge_eccentricity = 0.98
+
+canny_threshold_1 = 50
+canny_threshold_2 = 50
 
 
 # Pass in the RGB image to this function
@@ -43,7 +49,14 @@ def get_contours_img(img, color):
         eccentricity = math.sqrt(1 - eig_vals[0] / eig_vals[1])
         if max_cartridge_eccentricity > eccentricity > min_cartridge_eccentricity:
             filtered_contours.append(contour)
-    return filtered_contours
+    mask = cv2.drawContours(np.zeros_like(img), filtered_contours, -1, (255, 255, 255), thickness=-1)
+    threshold_image = np.bitwise_and(img, mask)
+    cartridges = []
+    for contour in filtered_contours:
+        bounding_rectangle = cv2.boundingRect(contour)
+        x, y, w, h = bounding_rectangle
+        cartridges.append(threshold_image[y:y + h, x:x + w])
+    return filtered_contours, cartridges
 
 
 def find_angle_of_rotation(contours, image_annotations=None):
@@ -78,25 +91,22 @@ def find_angle_of_rotation(contours, image_annotations=None):
     return image_annotations, angles, centers
 
 
-def orientation_detection(img, color, annotated_image=None):
-    contours = get_contours_img(img, color)
-    annotated_image, angles, centers = find_angle_of_rotation(contours, annotated_image)
-    return annotated_image, angles, centers
-
-#UNUSED
-def get_internal_features(cartridges):
-    # TODO This function is incomplete, it will be used to get internal features of the cartridge that can be used to
-    # tell if its facing up or facing down
+def get_internal_features(cartridges, angles):
     all_descriptors = []
-    for cartridge in cartridges:
+    for angle, cartridge in zip(angles, cartridges):
+        cartridge = rotate(cartridge, -angle, reshape=True)
         height, width, _ = cartridge.shape
         greyscale_image = cv2.cvtColor(cartridge, cv2.COLOR_BGR2HSV)[:, :, 2]
-        edges = cv2.Canny(greyscale_image, 150, 150)
+        edges = cv2.Canny(greyscale_image, canny_threshold_1, canny_threshold_2)
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
         morphed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(morphed_edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours = [cv2.convexHull(contour) for contour in contours]
+        # cv2.imshow('edges', edges)
+        # cv2.imshow('internal_features', cv2.drawContours(cartridge, contours, -1, (255, 255, 255), 1))
+        # cv2.waitKey(0)
         # get rid of noisy points/contours
-        valid_contours = [i for i, cont in enumerate(contours) if cv2.contourArea(cont) > cv2.arcLength(cont, True)]
+        valid_contours = [i for i, cont in enumerate(contours) if cv2.contourArea(cont) > cv2.arcLength(cont, False)]
         # generate descriptors for each contour using the contour moments
         contour_descriptors = []
         for i in valid_contours:
@@ -109,23 +119,63 @@ def get_internal_features(cartridges):
             eccentricity = math.sqrt(1 - eig_vals[0] / eig_vals[1])
             contour_descriptors.append([i, area, x, y, eccentricity])
 
-        if len(contour_descriptors) == 0:
-            all_descriptors.append(contour_descriptors)
+        if len(contour_descriptors) < 1:
+            all_descriptors.append(None)
+            print('error')
             continue
+
         # relative position to center of the sample, select the contour with the largest area
         contour_descriptors.sort(key=lambda descriptor: descriptor[1], reverse=True)
         cartridge_area = contour_descriptors[0][1]
         contour_x, contour_y = contour_descriptors[0][2], contour_descriptors[0][3]
-        contour_descriptors = [[d[0], d[1]/cartridge_area, (d[2] - contour_x)/width, (d[3] - contour_y)/height, d[4]]
-                               for d in contour_descriptors]
+        contour_descriptors = [
+            np.array([d[1] / cartridge_area, (d[2] - contour_x) / width, (d[3] - contour_y) / height, d[4]])
+            for d in contour_descriptors]
         all_descriptors.append(contour_descriptors)
     return all_descriptors
 
 
+def fit_GMM(images_directory, n_components, color):
+    X = []
+    for image_file in os.listdir(images_directory):
+        img = cv2.imread(os.path.join(images_directory, image_file))
+        contours, cartridges = get_contours_img(img, color)
+        _, angles, _ = find_angle_of_rotation(contours, None)
+        X.extend(get_internal_features(cartridges, angles))
+    gm = GaussianMixture(n_components=n_components, covariance_type='diag', n_init=5)
+    X = list(itertools.chain.from_iterable(X))
+    gm.fit(X)
+    return gm
+
+
+def detect_flip(all_descriptor, centers, face_down_model, annotated_image):
+    is_face_down = []
+    for center, descriptor in zip(centers, all_descriptor):
+        score = face_down_model.score(descriptor)
+        is_face_down.append(score > 0)
+        if annotated_image is not None:
+            if score < 0:
+                annotated_image = cv2.circle(annotated_image, center, 30, (0, 255, 0), 2)
+            if score > 0:
+                annotated_image = cv2.circle(annotated_image, center, 30, (0, 0, 255), 2)
+    return annotated_image, is_face_down
+
+
+def orientation_detection(img, color, face_down_model, annotated_image=None):
+    contours, cartridges = get_contours_img(img, color)
+    annotated_image, angles, centers = find_angle_of_rotation(contours, annotated_image)
+    all_descriptors = get_internal_features(cartridges, angles)
+    flips = detect_flip(all_descriptors, centers, face_down_model, annotated_image)
+    return annotated_image, angles, centers, flips
+
+
 if __name__ == "__main__":
-    image = sys.argv[1]
-    img = cv2.imread(image)
-    annotated_image, _, _ = orientation_detection(img, green, img.copy())
-    annotated_image, _, _ = orientation_detection(img, white, annotated_image)
-    cv2.imshow("orientation detection", annotated_image)
-    cv2.waitKey(0)
+    green_down = fit_GMM('training_images/green_down', 4, green)
+    white_down = fit_GMM('training_images/white_down', 4, white)
+
+    for image in os.listdir('test_images'):
+        img = cv2.imread(os.path.join('test_images', image))
+        annotated_image, _, _, _ = orientation_detection(img, green, green_down, img.copy())
+        annotated_image, _, _, _ = orientation_detection(img, white, white_down, annotated_image)
+        cv2.imshow("orientation detection", annotated_image)
+        cv2.waitKey(0)
