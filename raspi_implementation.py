@@ -10,8 +10,8 @@ from scipy.ndimage import rotate
 '''
 These are the HSV thresholds for the green cartridges and the white cartridges
 '''
-green = {'low_h': 45, 'high_h': 110, 'low_s': 120, 'high_s': 255, 'low_v': 0, 'high_v': 255}
-white = {'low_h': 0, 'high_h': 180, 'low_s': 0, 'high_s': 52, 'low_v': 115, 'high_v': 255}
+green = {'low_h': 20, 'high_h': 80, 'low_s': 50, 'high_s': 255, 'low_v': 0, 'high_v': 255}
+white = {'low_h': 0, 'high_h': 180, 'low_s': 0, 'high_s': 135, 'low_v': 70, 'high_v': 255}
 
 '''
 We can use some coarse heuristics to filter out noise and only find the contours that correspond to the cartridges
@@ -103,9 +103,8 @@ def get_internal_features(cartridges, angles):
         morphed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
         contours, _ = cv2.findContours(morphed_edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         contours = [cv2.convexHull(contour) for contour in contours]
-        # cv2.imshow('edges', edges)
-        # cv2.imshow('internal_features', cv2.drawContours(cartridge, contours, -1, (255, 255, 255), 1))
-        # cv2.waitKey(0)
+        cv2.imshow('edges', edges)
+        cv2.imshow('internal_features', cv2.drawContours(cartridge, contours, -1, (255, 255, 255), 1))
         # get rid of noisy points/contours
         valid_contours = [i for i, cont in enumerate(contours) if cv2.contourArea(cont) > cv2.arcLength(cont, False)]
         # generate descriptors for each contour using the contour moments
@@ -159,9 +158,10 @@ def detect_flip(all_descriptor, centers, face_down_model, annotated_image):
         score = face_down_model.score(descriptor)
         is_face_down.append(score > 0)
         if annotated_image is not None:
-            if score < 0:
+            print(score)
+            if score < 2:
                 annotated_image = cv2.circle(annotated_image, center, 30, (0, 255, 0), 2)
-            if score > 0:
+            if score > 2:
                 annotated_image = cv2.circle(annotated_image, center, 30, (0, 0, 255), 2)
     return annotated_image, is_face_down
 
@@ -182,7 +182,7 @@ def take_training_images(name, num_training_images):
         ret, frame = cap.read()
         cv2.imshow('Frame', frame)
         key = cv2.waitKey(30)
-        if key == -1:
+        if key != -1:
             cv2.imwrite(os.path.join('training_images', name, str(i) + ".png"), frame)
             i += 1
     cap.release()
@@ -216,5 +216,5 @@ if __name__ == "__main__":
             annotated_image, _, _, _ = orientation_detection(frame, green, green_down, frame.copy())
             annotated_image, _, _, _ = orientation_detection(frame, white, white_down, annotated_image)
             cv2.imshow("orientation detection", annotated_image)
-            cv2.waitKey(30)
+            cv2.waitKey(10)
         exit()
